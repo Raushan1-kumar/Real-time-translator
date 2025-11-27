@@ -112,47 +112,47 @@ const useTranslationAndSpeech = (targetLang, addLog, setFloatingText, isListenin
             addLog('translation-text', translatedText, `Translated to ${targetLang} (seq ${seq})`);
 
 
-            // 2. Text-to-Speech (TTS)
-            const ttsConfig = {
-                voiceConfig: { prebuiltVoiceConfig: { voiceName: "Kore" } } // Professional voice
-            };
+            // // 2. Text-to-Speech (TTS)
+            // const ttsConfig = {
+            //     voiceConfig: { prebuiltVoiceConfig: { voiceName: "Kore" } } // Professional voice
+            // };
 
-            const ttsPayload = {
-                contents: [{ parts: [{ text: translatedText }] }],
-                generationConfig: {
-                    responseModalities: ["AUDIO"],
-                    speechConfig: ttsConfig,
-                },
-                model: "gemini-2.5-flash-preview-tts"
-            };
+            // const ttsPayload = {
+            //     contents: [{ parts: [{ text: translatedText }] }],
+            //     generationConfig: {
+            //         responseModalities: ["AUDIO"],
+            //         speechConfig: ttsConfig,
+            //     },
+            //     model: "gemini-2.5-flash-preview-tts"
+            // };
 
-            const ttsResult = await fetchWithRetry(TTS_API_URL, ttsPayload);
+            // const ttsResult = await fetchWithRetry(TTS_API_URL, ttsPayload);
 
-            const audioPart = ttsResult?.candidates?.[0]?.content?.parts?.[0];
-            const base64Audio = audioPart?.inlineData?.data;
+            // const audioPart = ttsResult?.candidates?.[0]?.content?.parts?.[0];
+            // const base64Audio = audioPart?.inlineData?.data;
 
-            if (!base64Audio) {
-                addLog('error', `TTS API Error: No audio data received for seq ${seq}.`);
-                return;
-            }
+            // if (!base64Audio) {
+            //     addLog('error', `TTS API Error: No audio data received for seq ${seq}.`);
+            //     return;
+            // }
 
             // 3. Audio Preparation and enqueue for sequential playback
-            const pcmDataBuffer = base64ToArrayBuffer(base64Audio);
-            const pcm16 = new Int16Array(pcmDataBuffer);
-            const wavBlob = pcmToWav(pcm16, SAMPLE_RATE);
-            const audioUrl = URL.createObjectURL(wavBlob);
+            // const pcmDataBuffer = base64ToArrayBuffer(base64Audio);
+            // const pcm16 = new Int16Array(pcmDataBuffer);
+            // const wavBlob = pcmToWav(pcm16, SAMPLE_RATE);
+            // const audioUrl = URL.createObjectURL(wavBlob);
             
-            // push into queue and start playback if idle
-            playbackQueueRef.current.push({ seq, translatedText, audioUrl });
-            addLog('translation-audio', `Queued translation audio seq ${seq}`, `Queue length: ${playbackQueueRef.current.length}`);
-            playNext();
+            // // push into queue and start playback if idle
+            // playbackQueueRef.current.push({ seq, translatedText, audioUrl });
+            // addLog('translation-audio', `Queued translation audio seq ${seq}`, `Queue length: ${playbackQueueRef.current.length}`);
+            // playNext();
             
         } catch (error) {
             console.error("Translation/TTS Process Error:", error);
             setFloatingText("API Process Error. Check log.");
             addLog('error', `Translation/TTS error (seq ${seq}): ${error.message}`);
         }
-    }, [addLog, fetchWithRetry, targetLang, setFloatingText, isListening, playNext]);
+    }, [addLog, fetchWithRetry, targetLang, setFloatingText, isListening]);
 
     return translateAndSpeak;
 };

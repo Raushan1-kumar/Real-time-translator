@@ -1,16 +1,11 @@
-// src/hooks/useSpeechRecognition.js
 import { useEffect, useRef } from 'react';
 
 /**
  * Custom hook to manage browser-based Speech-to-Text (STT).
- * @param {string} sourceLang - The language for speech recognition.
- * @param {boolean} isListening - The state of whether listening should be active.
- * @param {function} setIsListening - Function to update the listening state.
- * @param {function} setStatusText - Function to update the microphone status text.
- * @param {function} setFloatingText - Function to update the main display text.
- * @param {function} addLog - Function to add an entry to the conversation log.
- * @param {function} onFinalTranscript - Callback function for final transcripts (sends to translation). Now receives (text, seq).
- * @returns {{ toggleListening: function }}
+ * Uses a committed buffer (final parts) + single pending interim string.
+ * Implements two flushing mechanisms:
+ * 1. Pause Detection (CHUNK_DELAY_MS): Flushes when silence/pause is detected.
+ * 2. Streaming Interval (STREAMING_INTERVAL_MS): Flushes every N seconds while active.
  */
 const useSpeechRecognition = (
     sourceLang,
@@ -24,35 +19,85 @@ const useSpeechRecognition = (
     const recognitionRef = useRef(null);
     const isListeningRef = useRef(isListening);
 
-    // Buffering and chunking
-    const bufferRef = useRef(''); // accumulated text chunk
+    // Committed final text + current interim text
+    const committedRef = useRef(''); // final segments only
+    const pendingInterimRef = useRef(''); // current interim only
+    
+    // Timer Refs and Constants (set to 7 seconds as requested)
+    const CHUNK_DELAY_MS = 7000; // 7s pause after last interim to flush
+    const STREAMING_INTERVAL_MS = 7000; // 7s fixed interval for continuous flush
+    
     const chunkTimerRef = useRef(null);
-    const CHUNK_DELAY_MS = 5000; // 5 seconds chunk flush
-    const seqRef = useRef(0); // sequence id for ordering
+    const streamingIntervalRef = useRef(null); // NEW: Fixed-interval streaming timer
 
+    const seqRef = useRef(0); // seq number for ordering
+    const lastSentRef = useRef(''); // last sent text to avoid duplicates
+
+    // --- Timer Management Functions ---
+    
     const clearChunkTimer = () => {
         if (chunkTimerRef.current) {
             clearTimeout(chunkTimerRef.current);
             chunkTimerRef.current = null;
         }
     };
+    
+    const clearStreamingInterval = () => {
+        if (streamingIntervalRef.current) {
+            clearInterval(streamingIntervalRef.current);
+            streamingIntervalRef.current = null;
+        }
+    };
+
+    const startStreamingInterval = () => {
+        clearStreamingInterval();
+        streamingIntervalRef.current = setInterval(() => {
+            // This forces a flush every STREAMING_INTERVAL_MS (7s)
+            // even if the user is speaking continuously.
+            flushBuffer();
+        }, STREAMING_INTERVAL_MS);
+    };
+
+    // --- Core Buffer Management (Flush) ---
 
     const flushBuffer = () => {
+        // Stop any pending timers before flushing
         clearChunkTimer();
-        const text = bufferRef.current.trim();
+        
+        const text = ((committedRef.current + ' ' + pendingInterimRef.current).trim());
+        
         if (!text) {
-            bufferRef.current = '';
+            // Nothing to send, reset buffers and exit
+            committedRef.current = '';
+            pendingInterimRef.current = '';
             return;
         }
+
+        // Avoid resending identical text, especially if triggered by the interval timer
+        if (lastSentRef.current && lastSentRef.current === text) {
+            // Clear buffers but don't re-send duplicates
+            committedRef.current = '';
+            pendingInterimRef.current = '';
+            lastSentRef.current = text;
+            setFloatingText("Thinking...");
+            return;
+        }
+
         seqRef.current += 1;
         const seq = seqRef.current;
+
+        // Send with the current composed text
         addLog('input', text, `Spoken in ${sourceLang}`);
         onFinalTranscript(text, seq);
-        bufferRef.current = '';
+
+        // Mark as sent and reset state
+        lastSentRef.current = text;
+        committedRef.current = '';
+        pendingInterimRef.current = '';
         setFloatingText("Thinking...");
     };
 
-    // Sync isListening state with a ref for use inside event handlers
+    // keep ref in sync
     useEffect(() => {
         isListeningRef.current = isListening;
         if (recognitionRef.current) {
@@ -60,7 +105,7 @@ const useSpeechRecognition = (
         }
     }, [isListening, sourceLang]);
 
-
+    // --- Main Speech Recognition Hook Logic ---
     useEffect(() => {
         if (!('webkitSpeechRecognition' in window)) {
             setStatusText("Error: Speech recognition not supported in this browser. Use Chrome/Edge.");
@@ -69,19 +114,20 @@ const useSpeechRecognition = (
 
         const recognition = new window.webkitSpeechRecognition();
         recognition.continuous = true;
-        recognition.interimResults = true; // enable interim results to chunk during long speech
+        recognition.interimResults = true;
         recognition.lang = sourceLang;
 
         recognition.onstart = () => {
             setIsListening(true);
             setStatusText(`Listening in ${sourceLang}... Speak now.`);
             setFloatingText("Listening...");
+            // Start the fixed-interval streaming timer
+            startStreamingInterval(); 
         };
 
         recognition.onend = () => {
-            // Only restart if the state is still set to listening (to maintain continuous listening)
             if (isListeningRef.current) {
-                // restart recognition to keep continuous listening
+                // Auto-restart if we are supposed to be listening
                 try {
                     recognition.start();
                 } catch (e) {
@@ -89,16 +135,17 @@ const useSpeechRecognition = (
                 }
             } else {
                 setStatusText("Listening stopped. Click to start.");
-                // flush any leftover buffer when stopped
-                flushBuffer();
+                flushBuffer(); // flush leftover buffers
+                clearStreamingInterval(); // Stop the fixed-interval timer
                 setFloatingText("Ready for the next sentence...");
             }
         };
 
         recognition.onerror = (event) => {
             console.error('Speech Recognition Error:', event.error);
-            // flush buffer if we have anything
             flushBuffer();
+            clearStreamingInterval(); // Stop the fixed-interval timer on error
+            
             if (event.error !== 'no-speech') {
                 try {
                     recognition.stop();
@@ -113,10 +160,10 @@ const useSpeechRecognition = (
         };
 
         recognition.onresult = (event) => {
-            // We'll collect interim and final text into a buffer, and flush based on final or timed interval
             let interimTranscript = '';
             let finalTranscript = '';
 
+            // Build transcripts from event results
             for (let i = event.resultIndex; i < event.results.length; ++i) {
                 const transcript = event.results[i][0].transcript;
                 if (event.results[i].isFinal) {
@@ -126,44 +173,48 @@ const useSpeechRecognition = (
                 }
             }
 
-            if (interimTranscript.trim().length > 0) {
-                // set floating text for interim
-                setFloatingText(interimTranscript.trim());
-                // Store the interim in buffer if none exists; otherwise append
-                bufferRef.current = (bufferRef.current + ' ' + interimTranscript).trim();
-
-                // Restart the timer for CHUNK_DELAY_MS to flush after last interim
-                clearChunkTimer();
-                chunkTimerRef.current = setTimeout(() => {
-                    flushBuffer();
-                }, CHUNK_DELAY_MS);
+            // FINAL: add to committed buffer and flush immediately (high priority)
+            if (finalTranscript.trim().length > 0) {
+                committedRef.current = (committedRef.current + ' ' + finalTranscript).trim();
+                pendingInterimRef.current = ''; // clear interim
+                flushBuffer();
+                return;
             }
 
-            if (finalTranscript.trim().length > 0) {
-                // Attach final segment to buffer and flush immediately
-                bufferRef.current = (bufferRef.current + ' ' + finalTranscript).trim();
-                flushBuffer();
+            // INTERIM: set the pending interim (replace, not append) and restart pause timer
+            if (interimTranscript.trim().length > 0) {
+                pendingInterimRef.current = interimTranscript.trim();
+                
+                // Display the combined committed + interim text to the user
+                setFloatingText(
+                    (committedRef.current ? committedRef.current + ' ' : '') + 
+                    pendingInterimRef.current
+                );
+
+                // Restart pause timer so we flush CHUNK_DELAY_MS (7s) after the last interim
+                clearChunkTimer();
+                chunkTimerRef.current = setTimeout(() => {
+                    flushBuffer(); // Flushes upon pause detection
+                }, CHUNK_DELAY_MS);
             } else {
-                // if no final and no interim (silence), keep "Thinking..." or stay with last interim
-                if (!interimTranscript) {
-                    setFloatingText("Thinking...");
-                }
+                // Silence - we keep "Thinking..." if nothing new is being recognized
+                setFloatingText("Thinking...");
             }
         };
 
         recognitionRef.current = recognition;
 
+        // Cleanup function for useEffect
         return () => {
-            // cleanup: stop recognition and clear timers
             try {
                 recognition.stop();
             } catch (e) {
                 // ignore
             }
             clearChunkTimer();
+            clearStreamingInterval(); // Important: clear the interval on unmount
         };
     }, [addLog, sourceLang, setIsListening, setStatusText, setFloatingText, onFinalTranscript]);
-
 
     const toggleListening = () => {
         const recognition = recognitionRef.current;
@@ -174,24 +225,22 @@ const useSpeechRecognition = (
         }
 
         if (isListeningRef.current) {
-            // Stop listening
+            // Stopping
             setIsListening(false);
-            // flush any buffered chunk before stopping
-            flushBuffer();
+            flushBuffer(); // flush any buffered chunk before stopping
+            clearStreamingInterval(); // Stop the fixed-interval timer
             try {
-                recognition.stop(); // .onend will handle the cleanup/status
+                recognition.stop();
             } catch (e) {
                 console.warn('Stop recognition failed:', e);
             }
         } else {
-            // Start listening
+            // Starting
             try {
-                // Must explicitly set isListening to true BEFORE starting recognition
-                // to avoid the onend handler immediately restarting
                 setIsListening(true);
+                // The recognition.start() call will trigger onstart, which starts the interval
                 recognition.start();
             } catch (e) {
-                // Ignore the error if recognition is already running (InvalidStateError)
                 if (e.name !== "InvalidStateError") {
                     console.error("Start recognition error:", e);
                 }

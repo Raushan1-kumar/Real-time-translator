@@ -1,62 +1,64 @@
-// src/utils/audioUtils.js
-import { SAMPLE_RATE, NUM_CHANNELS, BIT_DEPTH } from '../config/api';
+// Utility helpers for audio handling used by the TTS flow.
 
-/**
- * Converts a Base64 encoded string to an ArrayBuffer.
- * @param {string} base64 - Base64 encoded string.
- * @returns {ArrayBuffer}
- */
 export const base64ToArrayBuffer = (base64) => {
-    const binaryString = atob(base64);
-    const len = binaryString.length;
+    // Accept and decode base64 (no data: prefix)
+    const cleaned = base64.replace(/\s/g, '');
+    const binary = typeof atob !== 'undefined' ? atob(cleaned) : Buffer.from(cleaned, 'base64').toString('binary');
+    const len = binary.length;
     const bytes = new Uint8Array(len);
     for (let i = 0; i < len; i++) {
-        bytes[i] = binaryString.charCodeAt(i);
+        bytes[i] = binary.charCodeAt(i);
     }
     return bytes.buffer;
 };
 
 /**
- * Converts 16-bit PCM audio data to a WAV Blob.
- * @param {Int16Array} pcm16 - 16-bit PCM audio data.
- * @param {number} sampleRate - The sample rate of the audio.
- * @returns {Blob} The WAV audio Blob.
+ * Convert PCM 16-bit (Int16Array) to a WAV Blob.
+ * @param {Int16Array} pcm16Data - PCM 16-bit samples
+ * @param {number} sampleRate - audio sample rate, e.g. 16000
+ * @returns {Blob} - WAV audio blob (audio/wav)
  */
-export const pcmToWav = (pcm16, sampleRate) => {
-    const numSamples = pcm16.length;
-    const buffer = new ArrayBuffer(44 + numSamples * 2);
+export const pcmToWav = (pcm16Data, sampleRate = 16000) => {
+    const numChannels = 1;
+    const bytesPerSample = 2;
+    const blockAlign = numChannels * bytesPerSample;
+    const byteRate = sampleRate * blockAlign;
+
+    const dataSize = pcm16Data.length * bytesPerSample;
+    const buffer = new ArrayBuffer(44 + dataSize);
     const view = new DataView(buffer);
+
     let offset = 0;
 
-    function writeString(view, offset, string) {
-        for (let i = 0; i < string.length; i++) {
-            view.setUint8(offset + i, string.charCodeAt(i));
-        }
-    }
-
-    // RIFF chunk descriptor
+    // RIFF identifier
     writeString(view, offset, 'RIFF'); offset += 4;
-    view.setUint32(offset, 36 + numSamples * 2, true); offset += 4; // ChunkSize
+    view.setUint32(offset, 36 + dataSize, true); offset += 4; // file length - 8
     writeString(view, offset, 'WAVE'); offset += 4;
 
-    // fmt sub-chunk
+    // fmt chunk
     writeString(view, offset, 'fmt '); offset += 4;
-    view.setUint32(offset, 16, true); offset += 4; // Subchunk1Size (16 for PCM)
-    view.setUint16(offset, 1, true); offset += 2; // AudioFormat (1 for PCM)
-    view.setUint16(offset, NUM_CHANNELS, true); offset += 2; // NumChannels
-    view.setUint32(offset, sampleRate, true); offset += 4; // SampleRate
-    view.setUint32(offset, sampleRate * NUM_CHANNELS * (BIT_DEPTH / 8), true); offset += 4; // ByteRate
-    view.setUint16(offset, NUM_CHANNELS * (BIT_DEPTH / 8), true); offset += 2; // BlockAlign
-    view.setUint16(offset, BIT_DEPTH, true); offset += 2; // BitsPerSample
+    view.setUint32(offset, 16, true); offset += 4; // PCM chunk size
+    view.setUint16(offset, 1, true); offset += 2; // audio format = PCM
+    view.setUint16(offset, numChannels, true); offset += 2;
+    view.setUint32(offset, sampleRate, true); offset += 4;
+    view.setUint32(offset, byteRate, true); offset += 4;
+    view.setUint16(offset, blockAlign, true); offset += 2;
+    view.setUint16(offset, bytesPerSample * 8, true); offset += 2;
 
-    // data sub-chunk
+    // data chunk
     writeString(view, offset, 'data'); offset += 4;
-    view.setUint32(offset, numSamples * 2, true); offset += 4; // Subchunk2Size
+    view.setUint32(offset, dataSize, true); offset += 4;
 
-    // Write PCM data
-    for (let i = 0; i < numSamples; i++) {
-        view.setInt16(offset, pcm16[i], true); offset += 2;
+    // write PCM samples (little endian)
+    for (let i = 0; i < pcm16Data.length; i++, offset += 2) {
+        view.setInt16(offset, pcm16Data[i], true);
     }
 
     return new Blob([view], { type: 'audio/wav' });
+};
+
+const writeString = (view, offset, str) => {
+    for (let i = 0; i < str.length; i++) {
+        view.setUint8(offset + i, str.charCodeAt(i));
+    }
 };
