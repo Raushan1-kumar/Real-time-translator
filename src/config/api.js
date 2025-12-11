@@ -4,7 +4,7 @@
 // NOTE: Replace the empty string below with your actual Google AI or Google Cloud API Key.
 // For running inside this Canvas environment, we keep it empty.
 // ****************************************************************************
-export const API_KEY = "AIzaSyB91zmHm25JYw7VXxqoW0rMQqlAaM2Glrw";
+export const API_KEY = "AIzaSyDN0tzlo1tjEDljQ84i9agaJtFVBW1_TvE";
 
 // API URLs
 const BASE_URL = "https://generativelanguage.googleapis.com/v1beta";
